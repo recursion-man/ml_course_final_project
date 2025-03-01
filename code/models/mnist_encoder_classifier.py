@@ -1,4 +1,5 @@
-# models/mnist_encoder_classifier.py
+# models/mnist_encoder_classifier.py 
+# For the supervised classification task (1.2.2)
 import torch
 import torch.nn as nn
 from .mnist_classifier import MNISTClassifier
@@ -17,10 +18,11 @@ class MNISTEncoderClassifier(nn.Module):
         strides=[2,2], 
         paddings=[1,1], 
         latent_dim=128,
-        dropout_conv=0.2,        
-        dropout_fc=0.5,
+        dropout_conv=0.0,        
+        dropout_fc=0.0,
         batch_norm_conv=False,
-        batch_norm_fc=False,          
+        batch_norm_fc=False,  
+        hidden_dims=None,        
         num_classes=10
     ):
         super(MNISTEncoderClassifier, self).__init__()
@@ -32,7 +34,8 @@ class MNISTEncoderClassifier(nn.Module):
         paddings=paddings,
         latent_dim=latent_dim,
         dropout_conv=dropout_conv,
-        batch_norm_conv=batch_norm_conv
+        batch_norm_conv=batch_norm_conv,
+        hidden_dims=hidden_dims
         )
 
         self.classifier = MNISTClassifier(latent_dim=latent_dim, num_classes=num_classes, dropout_fc=dropout_fc, batch_norm_fc=batch_norm_fc)

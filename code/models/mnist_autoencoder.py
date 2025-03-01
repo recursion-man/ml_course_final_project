@@ -1,4 +1,5 @@
-# models/mnist_autoencoder.py
+# models/mnist_autoencoder.py 
+# For the unsupervised autoencoder task (1.2.1)
 import torch.nn as nn
 import torch
 from .common_autoencoder_blocks import Encoder, Decoder  # Suppose you keep shared blocks in a "common_autoencoder_blocks.py"
@@ -16,7 +17,8 @@ class MNISTAutoencoder(nn.Module):
             kernel_sizes=[3,3],
             strides=[2,2],
             paddings=[1,1],
-            latent_dim=latent_dim
+            latent_dim=latent_dim,
+            batch_norm_conv=True
         )
         self.decoder = Decoder(
             conv_output_shape=self.encoder.conv_output_shape,
@@ -25,7 +27,8 @@ class MNISTAutoencoder(nn.Module):
             strides=[2,2],
             paddings=[1,1],
             latent_dim=latent_dim,
-            output_channels=1
+            output_channels=1,
+            batch_norm_conv=True   
         )
 
     def forward(self, x):

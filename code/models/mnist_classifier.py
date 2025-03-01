@@ -1,4 +1,5 @@
 # models/mnist_classifier.py
+# A classifier for 1.2.1 (autoencoder) and 1.2.3 (contrastive)
 import torch.nn as nn
 
 class MNISTClassifier(nn.Module):

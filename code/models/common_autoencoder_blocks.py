@@ -45,6 +45,7 @@ class Encoder(nn.Module):
         with torch.no_grad():
             dummy = torch.zeros(1, *input_shape)
             out = self.conv(dummy)
+        self.conv_output_shape = out.shape[1:]   
         flattened_size = out.numel()  # number of elements
 
         # Build FC layers
@@ -76,10 +77,11 @@ class Decoder(nn.Module):
         channels, 
         kernel_sizes, 
         strides, 
-        paddings, 
-        dropout_conv,
-        latent_dim, 
-        output_channels=1
+        paddings,
+        latent_dim=128, 
+        dropout_conv=0.0,
+        output_channels=1, # If we are using RGB, this should be 3
+        batch_norm_conv=False
     ):
         """
         Args:
@@ -129,6 +131,8 @@ class Decoder(nn.Module):
             ))
 
             if i < num_layers - 1:
+                if batch_norm_conv:
+                    layers.append(nn.BatchNorm2d(out_ch))
                 layers.append(nn.ReLU(inplace=True))
                 layers.append(nn.Dropout2d(p=dropout_conv))
             in_channels = out_ch

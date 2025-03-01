@@ -1,8 +1,7 @@
-# models/mnist_supconv.py
+# models/mnist_supconv.py 
+# For the unsupervised contrastive learning task (1.2.3)
 import torch
 import torch.nn as nn
-# from .mnist_classifier import MNISTClassifier # (unused)
-
 from .common_autoencoder_blocks import Encoder
 
 class MNISTSupCon(nn.Module):
@@ -18,8 +17,9 @@ class MNISTSupCon(nn.Module):
         strides=[2, 2],
         paddings=[1, 1],
         latent_dim=128,
-        dropout_conv=0.2,
-        batch_norm_conv=True
+        dropout_conv=0.0,
+        batch_norm_conv=False,
+        hidden_dims=None
     ):
         super(MNISTSupCon, self).__init__()
         self.encoder = Encoder(
@@ -29,7 +29,7 @@ class MNISTSupCon(nn.Module):
             strides=strides,
             paddings=paddings,
             latent_dim=latent_dim,
-            hidden_dims=[1024],  # single hidden layer example
+            hidden_dims=hidden_dims,  # in the article they used 2048
             dropout_conv=dropout_conv,
             batch_norm_conv=batch_norm_conv
         )
