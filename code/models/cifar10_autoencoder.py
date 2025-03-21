@@ -13,20 +13,23 @@ class CIFAR10Autoencoder(nn.Module):
         # This might differ from the MNIST version
         self.encoder = Encoder(
             input_shape=(3,32,32),
-            channels=[32,64,128],  # maybe deeper for CIFAR10
-            kernel_sizes=[3,3,3],
-            strides=[2,2,2],
-            paddings=[1,1,1],
-            latent_dim=latent_dim
-        )
-        self.decoder = Decoder(
-            conv_output_shape=self.encoder.conv_output_shape,
-            channels=[32,64,128],
+            channels=[64,128,256],  # maybe deeper for CIFAR10
             kernel_sizes=[3,3,3],
             strides=[2,2,2],
             paddings=[1,1,1],
             latent_dim=latent_dim,
-            output_channels=3
+            batch_norm_conv = True
+        )
+        self.decoder = Decoder(
+            conv_output_shape=self.encoder.conv_output_shape,
+            channels=[256,128,64],
+            kernel_sizes=[3,3,3],
+            strides=[2,2,2],
+            paddings=[1,1,1],
+            latent_dim=latent_dim,
+            output_channels=3,
+            batch_norm_conv = True,
+
         )
 
     def forward(self, x):
