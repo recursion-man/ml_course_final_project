@@ -6,14 +6,8 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 
 def supcon_loss(embeddings, labels, temperature=0.07, eps=1e-8):
-    """
-    Standard supervised contrastive loss: 
-      embeddings: shape (2B, d)
-      labels: shape (2B,)
-    """
     embeddings = F.normalize(embeddings, dim=1)
     sim_matrix = torch.matmul(embeddings, embeddings.T) / temperature
-
     labels = labels.view(-1, 1)
     matches = (labels == labels.T).float()
     diag = torch.eye(matches.shape[0], device=matches.device)
@@ -23,29 +17,30 @@ def supcon_loss(embeddings, labels, temperature=0.07, eps=1e-8):
     pos_log_prob = (matches * log_prob).sum(dim=1)
     num_positives = matches.sum(dim=1)
     mean_log_prob_pos = pos_log_prob / (num_positives + eps)
-    loss = -mean_log_prob_pos.mean()
-    return loss
+    return -mean_log_prob_pos.mean()
 
 class SupConTrainer:
-    """
-    A minimal trainer for 2-crops SupCon, but
-    we handle them as (im1, im2) => each shape [B, C, H, W].
-    Now also logs train/val/test supcon loss each epoch,
-    and provides plotting & table printing for the final metrics.
-    """
     def __init__(
         self,
         model,
         train_loader,
         val_loader,
-        test_loader=None,   # new: optional test loader
+        test_loader=None,
         optimizer=None,
         device='cuda',
         num_epochs=10,
         patience=3,
         save_path=None,
         resume_path=None,
-        temperature=0.07
+        temperature=0.07,
+        # NEW: scheduler 
+        scheduler_type=None,  # "step", "cosine", "plateau", or None
+        step_size=10,
+        gamma=0.1,
+        T_max=150,
+        plateau_factor=0.1,
+        plateau_patience=5,
+        plateau_threshold=1e-4
     ):
         self.model = model.to(device)
         self.train_loader = train_loader
@@ -61,10 +56,31 @@ class SupConTrainer:
         self.best_val_loss = float('inf')
         self.epochs_no_improve = 0
 
-        # We store metric history
+        # histories
         self.train_loss_history = []
-        self.val_loss_history = []
-        self.test_loss_history = []  # only if test_loader is not None
+        self.val_loss_history   = []
+        self.test_loss_history  = []
+
+        # scheduler
+        self.scheduler_type = scheduler_type
+        self.scheduler = None
+        if self.optimizer is not None:
+            if self.scheduler_type == "step":
+                self.scheduler = torch.optim.lr_scheduler.StepLR(
+                    self.optimizer, step_size=step_size, gamma=gamma
+                )
+            elif self.scheduler_type == "cosine":
+                self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    self.optimizer, T_max=T_max
+                )
+            elif self.scheduler_type == "plateau":
+                self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                    self.optimizer,
+                    mode='min',
+                    factor=plateau_factor,
+                    patience=plateau_patience,
+                    threshold=plateau_threshold
+                )
 
         self.start_epoch = 1
         if resume_path is not None and os.path.isfile(resume_path):
@@ -83,24 +99,28 @@ class SupConTrainer:
 
         for epoch in range(self.start_epoch, self.start_epoch + self.num_epochs):
             train_loss = self.train_epoch(epoch)
-            val_loss = self.validate_epoch(epoch)
+            val_loss   = self.validate_epoch(epoch)
 
             self.train_loss_history.append(train_loss)
             self.val_loss_history.append(val_loss)
 
-            # Evaluate on test set if provided
             if self.test_loader is not None:
                 test_loss = self.evaluate_epoch(self.test_loader)
                 self.test_loss_history.append(test_loss)
             else:
                 test_loss = None
 
-            # Early stopping logic
+            # Scheduler step
+            if self.scheduler_type == "plateau":
+                self.scheduler.step(val_loss)
+            elif self.scheduler:
+                self.scheduler.step()
+
+            # Early stopping
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
                 self.epochs_no_improve = 0
                 if self.save_path is not None:
-                    # save checkpoint
                     checkpoint = {
                         "epoch": epoch,
                         "model_state_dict": self.model.state_dict(),
@@ -110,7 +130,7 @@ class SupConTrainer:
                     torch.save(checkpoint, self.save_path)
             else:
                 self.epochs_no_improve += 1
-            
+
             if self.epochs_no_improve >= self.patience:
                 print(f"Early stopping at epoch {epoch}, best val loss: {self.best_val_loss:.4f}")
                 break
@@ -127,7 +147,6 @@ class SupConTrainer:
         self.model.train()
         running_loss = 0.0
         total = 0
-
         for (im1, im2), labels in self.train_loader:
             im1, im2 = im1.to(self.device), im2.to(self.device)
             labels = labels.to(self.device)
@@ -138,15 +157,14 @@ class SupConTrainer:
             self.optimizer.zero_grad()
             embeddings = self.model(big_batch)
             loss = supcon_loss(embeddings, labels_rep, self.temperature)
-            batch_sz = big_batch.size(0)
+            bs = big_batch.size(0)
             loss.backward()
             self.optimizer.step()
 
-            running_loss += loss.item() * batch_sz
-            total += batch_sz
+            running_loss += loss.item() * bs
+            total += bs
 
-        avg_loss = running_loss / total
-        return avg_loss
+        return running_loss / total
 
     def validate_epoch(self, epoch):
         return self.evaluate_epoch(self.val_loader)
@@ -159,40 +177,38 @@ class SupConTrainer:
             for (im1, im2), labels in loader:
                 im1, im2 = im1.to(self.device), im2.to(self.device)
                 labels = labels.to(self.device)
+
                 big_batch = torch.cat([im1, im2], dim=0)
                 labels_rep = torch.cat([labels, labels], dim=0)
 
                 embeddings = self.model(big_batch)
-                val_loss = supcon_loss(embeddings, labels_rep, self.temperature)
+                loss = supcon_loss(embeddings, labels_rep, self.temperature)
 
-                batch_sz = big_batch.size(0)
-                running_loss += val_loss.item() * batch_sz
-                total += batch_sz
+                bs = big_batch.size(0)
+                running_loss += loss.item() * bs
+                total += bs
 
         return running_loss / total
 
     def plot_metrics(self):
-
-        epochs = range(len(self.train_loss_history))  
-        
-        plt.figure(figsize=(8, 6))
+        epochs = range(len(self.train_loss_history))
+        plt.figure(figsize=(8,6))
         plt.plot(epochs, self.train_loss_history, label='Train Loss', marker='o')
         plt.plot(epochs, self.val_loss_history,   label='Val Loss',   marker='x')
         if self.test_loader is not None and len(self.test_loss_history) == len(epochs):
             plt.plot(epochs, self.test_loss_history, label='Test Loss', marker='s')
 
-        # Add title, labels, grid
-        plt.title('SupCon Training Curve\nLoss Trends Over Epochs', fontsize=14)
-        plt.suptitle('This plot shows how the SupCon loss changes for Training, Validation, and Test sets.',
-                    fontsize=10, y=0.95)
+        plt.title('SupCon Training Curve', fontsize=14)
+        plt.suptitle('Visualizing SupCon training/val/test loss over epochs.',
+                     fontsize=10, y=0.95)
         plt.xlabel('Epoch', fontsize=12)
-        plt.ylabel('SupCon Loss', fontsize=12)
+        plt.ylabel('Contrastive Loss', fontsize=12)
         plt.grid(True, alpha=0.3)
         plt.legend(loc='best')
         plt.tight_layout()
         plt.show()
 
-        # Print final metrics
+        # final
         print("=== Final SupCon Metrics ===")
         last_idx = len(self.train_loss_history) - 1
         print(f"Train Loss: {self.train_loss_history[last_idx]:.4f}")

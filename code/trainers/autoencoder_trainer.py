@@ -11,7 +11,7 @@ class AutoencoderTrainer:
         train_loader, 
         val_loader,
         test_loader=None,   # optional test
-        criterion=None,     # e.g. MSELoss
+        criterion=None,     # MSELoss or L1Loss
         device='cuda',
         lr=1e-3, 
         num_epochs=10,
@@ -19,11 +19,15 @@ class AutoencoderTrainer:
         resume_path=None,
         weight_decay=0.0, 
         early_stopping=True,
-        patience=3
+        patience=3,
+        scheduler_type=None,  # "step" or "cosine" or None
+        step_size=30,         # for StepLR
+        gamma=0.1,            # for StepLR
+        T_max=150             # for CosineAnnealingLR
     ):
         """
-        Enhanced trainer for self-supervised autoencoder training.
-        Will log train/val/test reconstruction error each epoch.
+        Autoencoder trainer with optional LR scheduler support.
+        If scheduler_type=None, no LR schedule is used (same as old code).
         """
         self.model = model.to(device)
         self.train_loader = train_loader
@@ -34,15 +38,35 @@ class AutoencoderTrainer:
         self.num_epochs = num_epochs
         self.save_path = save_path
         
-        # We can use weight decay if we want
-        self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr, weight_decay=weight_decay)
-        self.criterion = criterion if criterion else nn.L1Loss()  # default to L1 loss if none
-        self.l1_criterion = nn.L1Loss()  # for reporting mean absolute recon error if desired
+        # 1) Initialize optimizer
+        self.optimizer = optim.Adam(
+            self.model.parameters(),
+            lr=self.lr,
+            weight_decay=weight_decay
+        )
 
+        self.criterion = criterion if criterion else nn.L1Loss()
+        self.l1_criterion = nn.L1Loss()  
         self.early_stopping = early_stopping
         self.patience = patience
         self.best_val_loss = float('inf')
         self.epochs_no_improve = 0
+
+
+        self.scheduler_type = scheduler_type
+        self.scheduler = None
+        if self.scheduler_type == "step":
+            self.scheduler = optim.lr_scheduler.StepLR(
+                self.optimizer, step_size=step_size, gamma=gamma
+            )
+        elif self.scheduler_type == "cosine":
+            self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer, T_max=T_max
+            )
+        elif self.scheduler_type == "plateau":
+            self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer, mode='min', factor=0.1, patience=5
+            )    
 
         self.start_epoch = 1
         if resume_path is not None:
@@ -53,23 +77,24 @@ class AutoencoderTrainer:
             self.best_val_loss = checkpoint.get("best_val_loss", float('inf'))
             print(f"Resumed training from {resume_path}, starting epoch {self.start_epoch}")
 
-        # For logging each epoch
+        # 5) Histories
         self.train_loss_history = []
-        self.val_loss_history = []
-        self.test_loss_history = []
+        self.val_loss_history   = []
+        self.test_loss_history  = []
 
-        self.train_l1_history = []
-        self.val_l1_history = []
-        self.test_l1_history = []
+        self.train_l1_history  = []
+        self.val_l1_history    = []
+        self.test_l1_history   = []
 
     def train_epoch(self, epoch):
         self.model.train()
         total_loss = 0.0
-        total_l1 = 0.0
-        count = 0
+        total_l1   = 0.0
+        count      = 0
 
         for data, _ in self.train_loader:
             data = data.to(self.device)
+
             self.optimizer.zero_grad()
             reconstruction, _ = self.model(data)
             loss = self.criterion(reconstruction, data)
@@ -78,44 +103,46 @@ class AutoencoderTrainer:
 
             bs = data.size(0)
             total_loss += loss.item() * bs
-            # also track L1
-            l1_loss = self.l1_criterion(reconstruction, data)
+
+            l1_loss   = self.l1_criterion(reconstruction, data)
             total_l1 += l1_loss.item() * bs
-            count += bs
+            count    += bs
 
         avg_loss = total_loss / count
-        avg_l1 = total_l1 / count
+        avg_l1   = total_l1 / count
         return avg_loss, avg_l1
 
     def evaluate_epoch(self, loader):
         self.model.eval()
         total_loss = 0.0
-        total_l1 = 0.0
-        count = 0
+        total_l1   = 0.0
+        count      = 0
+
         with torch.no_grad():
             for data, _ in loader:
                 data = data.to(self.device)
                 reconstruction, _ = self.model(data)
-                loss = self.criterion(reconstruction, data)
-                l1_loss = self.l1_criterion(reconstruction, data)
 
-                bs = data.size(0)
+                loss   = self.criterion(reconstruction, data)
+                l1loss = self.l1_criterion(reconstruction, data)
+
+                bs          = data.size(0)
                 total_loss += loss.item() * bs
-                total_l1 += l1_loss.item() * bs
-                count += bs
+                total_l1   += l1loss.item() * bs
+                count      += bs
 
         avg_loss = total_loss / count
-        avg_l1 = total_l1 / count
+        avg_l1   = total_l1 / count
         return avg_loss, avg_l1
 
     def train(self):
         final_epoch = self.start_epoch + self.num_epochs - 1
 
         for epoch in range(self.start_epoch, final_epoch + 1):
-            train_loss, train_l1 = self.train_epoch(epoch)
-            val_loss, val_l1     = self.evaluate_epoch(self.val_loader)
 
-            # optional test
+            train_loss, train_l1 = self.train_epoch(epoch)
+            val_loss,   val_l1   = self.evaluate_epoch(self.val_loader)
+
             if self.test_loader is not None:
                 test_loss, test_l1 = self.evaluate_epoch(self.test_loader)
             else:
@@ -131,6 +158,7 @@ class AutoencoderTrainer:
             if test_l1 is not None:
                 self.test_l1_history.append(test_l1)
 
+
             print(f"Epoch [{epoch}] - "
                   f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}", end="")
             if test_loss is not None:
@@ -141,7 +169,11 @@ class AutoencoderTrainer:
                 print(f", Test L1: {test_l1:.4f}", end="")
             print()
 
-            # Early stopping
+            if self.scheduler_type == "plateau":
+                self.scheduler.step(val_loss)
+            elif self.scheduler is not None:
+                self.scheduler.step()
+
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
                 self.epochs_no_improve = 0
@@ -165,7 +197,7 @@ class AutoencoderTrainer:
     def plot_metrics(self):
         """
         Plot reconstruction losses (train/val/test if available) and L1 errors (train/val/test).
-        Useful for monitoring how well the autoencoder is reconstructing inputs.
+        If test_loader was used, it will also be plotted.
         """
         epochs = range(len(self.train_loss_history))
 
@@ -176,11 +208,9 @@ class AutoencoderTrainer:
         if self.test_loader is not None and len(self.test_loss_history) == len(epochs):
             plt.plot(epochs, self.test_loss_history, label='Test Loss', marker='s')
 
-        plt.title('Autoencoder Reconstruction Loss\nL1 Loss Over Epochs', fontsize=14)
-        plt.suptitle('Shows how the reconstruction loss changes over training, validation, and testing phases.',
-                    fontsize=10, y=0.95)
+        plt.title('Autoencoder Reconstruction Loss', fontsize=14)
         plt.xlabel('Epoch', fontsize=12)
-        plt.ylabel('Reconstruction Loss', fontsize=12)
+        plt.ylabel('Loss', fontsize=12)
         plt.grid(True, alpha=0.3)
         plt.legend(loc='best')
         plt.tight_layout()
@@ -193,9 +223,7 @@ class AutoencoderTrainer:
         if self.test_loader is not None and len(self.test_l1_history) == len(epochs):
             plt.plot(epochs, self.test_l1_history, label='Test L1', marker='s')
 
-        plt.title('Autoencoder Mean Absolute Error\nL1 Over Epochs', fontsize=14)
-        plt.suptitle('Tracks the L1 difference between inputs and reconstructions over time.',
-                    fontsize=10, y=0.95)
+        plt.title('Autoencoder Mean Absolute Error', fontsize=14)
         plt.xlabel('Epoch', fontsize=12)
         plt.ylabel('L1 Error', fontsize=12)
         plt.grid(True, alpha=0.3)
@@ -203,7 +231,7 @@ class AutoencoderTrainer:
         plt.tight_layout()
         plt.show()
 
-        # Print final metrics
+        # Print final
         last_idx = len(self.train_loss_history) - 1
         print("=== Final Autoencoder Metrics ===")
         print(f"Train ReconLoss: {self.train_loss_history[last_idx]:.4f}")
@@ -214,4 +242,3 @@ class AutoencoderTrainer:
         print(f"Val   L1: {self.val_l1_history[last_idx]:.4f}")
         if self.test_loader is not None:
             print(f"Test  L1: {self.test_l1_history[last_idx]:.4f}")
-

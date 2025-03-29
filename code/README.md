@@ -1,4 +1,4 @@
-# My Deep Learning Project
+# Deep Learning on Computational Accelerators 236781 Mini-Project
 
 This project explores different methods like autoencoders, supervised learning, and contrastive learning on MNIST and CIFAR-10 datasets.
 
@@ -15,3 +15,8 @@ python main.py --dataset cifar --method autoencoder
 - `--data-path`: Dataset location (default: `/datasets/cv_datasets/data`)  
 - `--seed`: Random seed (default: 42)  
 - `--device`: `cuda` or `cpu` (auto-detected)
+
+## Full Results & Analysis
+
+You can find full results, visualizations, and experiment summaries** in the **`notebooks`** folder.  
+These Jupyter notebooks provide detailed insights into the training process, performance metrics, and model behavior.

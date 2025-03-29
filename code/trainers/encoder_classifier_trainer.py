@@ -19,11 +19,20 @@ class EncoderClassifierTrainer:
         resume_path=None,
         weight_decay=0.0,
         early_stopping=True,
-        patience=3
+        patience=3,
+        # SCHEDULER
+        scheduler_type=None,  # "step", "cosine", "plateau", or None
+        step_size=10,
+        gamma=0.1,
+        T_max=150,
+        plateau_factor=0.1,
+        plateau_patience=5,
+        plateau_threshold=1e-4
     ):
         """
         End-to-end classification (encoder+classifier).
-        We'll track train/val/test accuracy, plus val loss for early stopping.
+        We'll track train/val/test accuracy, plus val loss for early stopping,
+        plus optional scheduler.
         """
         self.model = model.to(device)
         self.train_loader = train_loader
@@ -45,6 +54,26 @@ class EncoderClassifierTrainer:
         self.patience = patience
         self.best_val_loss = float('inf')
         self.epochs_no_improve = 0
+
+        # Scheduler
+        self.scheduler_type = scheduler_type
+        self.scheduler = None
+        if self.scheduler_type == "step":
+            self.scheduler = optim.lr_scheduler.StepLR(
+                self.optimizer, step_size=step_size, gamma=gamma
+            )
+        elif self.scheduler_type == "cosine":
+            self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer, T_max=T_max
+            )
+        elif self.scheduler_type == "plateau":
+            self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer,
+                mode='min',
+                factor=plateau_factor,
+                patience=plateau_patience,
+                threshold=plateau_threshold
+            )
 
         self.start_epoch = 1
         # For storing metrics
@@ -111,7 +140,7 @@ class EncoderClassifierTrainer:
         final_epoch = self.start_epoch + self.num_epochs - 1
         for epoch in range(self.start_epoch, final_epoch + 1):
             train_loss, train_acc = self.train_epoch(epoch)
-            val_loss, val_acc = self.evaluate_epoch(self.val_loader)
+            val_loss, val_acc     = self.evaluate_epoch(self.val_loader)
             if self.test_loader is not None:
                 test_loss, test_acc = self.evaluate_epoch(self.test_loader)
             else:
@@ -128,6 +157,13 @@ class EncoderClassifierTrainer:
                 print(f", Test Acc: {test_acc:.4f}", end="")
             print()
 
+            # Step the scheduler
+            if self.scheduler_type == "plateau":
+                self.scheduler.step(val_loss)
+            elif self.scheduler is not None:
+                self.scheduler.step()
+
+            # Early stopping
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
                 self.epochs_no_improve = 0
@@ -164,7 +200,7 @@ class EncoderClassifierTrainer:
             plt.plot(epochs, self.test_acc_history, label='Test Acc', marker='s')
 
         plt.title('Encoder+Classifier Accuracy\nAccuracy Trends Over Epochs', fontsize=14)
-        plt.suptitle('Shows how the accuracy changes for Training and Validation.',
+        plt.suptitle('Shows how the accuracy changes for Training, Validation, and Test.', 
                     fontsize=10, y=0.95)
         plt.xlabel('Epoch', fontsize=12)
         plt.ylabel('Accuracy', fontsize=12)
@@ -178,16 +214,16 @@ class EncoderClassifierTrainer:
         plt.plot(epochs, self.val_loss_history, label='Val Loss', marker='o', color='red')
 
         plt.title('Encoder+Classifier Validation Loss Over Epochs', fontsize=14)
-        plt.suptitle('Tracks the validation loss to inspect overfitting or underfitting trends.', 
+        plt.suptitle('Tracks validation loss to see if we are overfitting or still learning.', 
                     fontsize=10, y=0.95)
-        plt.xlabel('Epoch', fontsize=12)
-        plt.ylabel('Loss', fontsize=12)
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
         plt.grid(True, alpha=0.3)
         plt.legend(loc='best')
         plt.tight_layout()
         plt.show()
 
-        # Print final metrics
+        # Print final
         last_idx = len(self.val_loss_history) - 1
         print("=== Final Encoder+Classifier Metrics ===")
         print(f"Val Loss: {self.val_loss_history[last_idx]:.4f}")

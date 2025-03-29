@@ -10,6 +10,7 @@ from models.mnist_classifier import MNISTClassifier
 from trainers.classifier_trainer import ClassifierTrainer
 
 def run(args):
+    
     train_transform = transforms.Compose([
     transforms.RandomRotation(degrees=5),
     transforms.RandomAffine(0, translate=(0.05, 0.05)),

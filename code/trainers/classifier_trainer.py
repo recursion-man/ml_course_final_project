@@ -8,7 +8,8 @@ import matplotlib.pyplot as plt
 class ClassifierTrainer:
     """
     A trainer for a frozen encoder + trainable classifier scenario.
-    Now logs train/val/test accuracy each epoch + final table/plots.
+    Now logs train/val/test accuracy each epoch, final table/plots,
+    plus optional LR scheduling.
     """
     def __init__(
         self, 
@@ -23,7 +24,14 @@ class ClassifierTrainer:
         num_epochs=10,
         patience=3,
         save_path=None,
-        resume_path=None
+        resume_path=None,
+        scheduler_type=None,   # "step", "cosine", "plateau", or None
+        step_size=10,
+        gamma=0.1,
+        T_max=150,
+        plateau_factor=0.1,
+        plateau_patience=5,
+        plateau_threshold=1e-4
     ):
         self.encoder = encoder.to(device)
         self.classifier = classifier.to(device)
@@ -47,6 +55,27 @@ class ClassifierTrainer:
             weight_decay=self.weight_decay
         )
         self.criterion = nn.CrossEntropyLoss()
+
+        # SCHEDULER
+        self.scheduler_type = scheduler_type
+        self.scheduler = None
+        if self.scheduler_type == "step":
+            self.scheduler = optim.lr_scheduler.StepLR(
+                self.optimizer, step_size=step_size, gamma=gamma
+            )
+        elif self.scheduler_type == "cosine":
+            self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer, T_max=T_max
+            )
+        elif self.scheduler_type == "plateau":
+            self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer,
+                mode='min',
+                factor=plateau_factor,
+                patience=plateau_patience,
+                threshold=plateau_threshold
+                # verbose=True  # optional, might cause a deprecation warning
+            )
 
         self.start_epoch = 1
         self.best_val_loss = float('inf')
@@ -78,6 +107,7 @@ class ClassifierTrainer:
         for images, labels in self.train_loader:
             images, labels = images.to(self.device), labels.to(self.device)
 
+            # Freeze encoder => latents
             with torch.no_grad():
                 latents = self.encoder(images)
 
@@ -87,10 +117,11 @@ class ClassifierTrainer:
             loss.backward()
             self.optimizer.step()
 
-            running_loss += loss.item() * images.size(0)
+            bs = images.size(0)
+            running_loss += loss.item() * bs
             _, predicted = torch.max(outputs, dim=1)
             correct += (predicted == labels).sum().item()
-            total += labels.size(0)
+            total += bs
 
         avg_loss = running_loss / total
         train_acc = correct / total
@@ -114,10 +145,11 @@ class ClassifierTrainer:
                 outputs = self.classifier(latents)
                 loss = self.criterion(outputs, labels)
 
-                running_loss += loss.item() * images.size(0)
+                bs = images.size(0)
+                running_loss += loss.item() * bs
                 _, predicted = torch.max(outputs, dim=1)
                 correct += (predicted == labels).sum().item()
-                total += labels.size(0)
+                total += bs
 
         avg_loss = running_loss / total
         accuracy = correct / total
@@ -128,7 +160,7 @@ class ClassifierTrainer:
 
         for epoch in range(self.start_epoch, final_epoch + 1):
             train_loss, train_acc = self.train_epoch(epoch)
-            val_loss, val_acc = self.evaluate_epoch(self.val_loader)
+            val_loss, val_acc     = self.evaluate_epoch(self.val_loader)
 
             if self.test_loader is not None:
                 test_loss, test_acc = self.evaluate_epoch(self.test_loader)
@@ -146,6 +178,14 @@ class ClassifierTrainer:
             if test_acc is not None:
                 print(f", TestAcc: {test_acc:.4f}", end="")
             print(f" | ValLoss: {val_loss:.4f}")
+
+            # STEP THE SCHEDULER
+            if self.scheduler_type == "plateau":
+                # pass the val_loss to reduce_on_plateau
+                self.scheduler.step(val_loss)
+            elif self.scheduler is not None:
+                # step or cosine
+                self.scheduler.step()
 
             # Early stopping check
             if val_loss < self.best_val_loss:
@@ -171,8 +211,10 @@ class ClassifierTrainer:
 
     def plot_metrics(self):
         """
-        Plot train/val/test (optional) accuracy for a downstream classifier and validation loss.
-        Helps visualize whether the classifier is converging properly or overfitting.
+        Plot train/val/test (optional) accuracy for a downstream classifier
+        and validation loss.
+        Helps visualize whether the classifier is converging properly
+        or overfitting.
         """
         epochs = range(len(self.train_acc_history))
 
@@ -215,4 +257,3 @@ class ClassifierTrainer:
         print(f"Val   Acc: {self.val_acc_history[last_idx]*100:.2f}%")
         if self.test_loader is not None:
             print(f"Test  Acc: {self.test_acc_history[last_idx]*100:.2f}%")
-            
